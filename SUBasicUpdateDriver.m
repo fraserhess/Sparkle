@@ -18,7 +18,9 @@
 #import "SUPlainInstaller.h"
 #import "SUPlainInstallerInternals.h"
 #import "SUBinaryDeltaCommon.h"
+#import "SUCodeSigningVerifier.h"
 #import "SUUpdater_Private.h"
+#import "SUXPC.h"
 
 @interface SUBasicUpdateDriver () <NSURLDownloadDelegate>; @end
 
@@ -65,8 +67,21 @@
 
 - (BOOL)hostSupportsItem:(SUAppcastItem *)ui
 {
-	if ([ui minimumSystemVersion] == nil || [[ui minimumSystemVersion] isEqualToString:@""]) { return YES; }
-	return [[SUStandardVersionComparator defaultComparator] compareVersion:[ui minimumSystemVersion] toVersion:[SUHost systemVersionString]] != NSOrderedDescending;
+	if (([ui minimumSystemVersion] == nil || [[ui minimumSystemVersion] isEqualToString:@""]) && 
+        ([ui maximumSystemVersion] == nil || [[ui maximumSystemVersion] isEqualToString:@""])) { return YES; }
+    
+    BOOL minimumVersionOK = TRUE;
+    BOOL maximumVersionOK = TRUE;
+    
+    // Check minimum and maximum System Version
+    if ([ui minimumSystemVersion] != nil && ![[ui minimumSystemVersion] isEqualToString:@""]) {
+        minimumVersionOK = [[SUStandardVersionComparator defaultComparator] compareVersion:[ui minimumSystemVersion] toVersion:[SUHost systemVersionString]] != NSOrderedDescending;
+    }
+    if ([ui maximumSystemVersion] != nil && ![[ui maximumSystemVersion] isEqualToString:@""]) {
+        maximumVersionOK = [[SUStandardVersionComparator defaultComparator] compareVersion:[ui maximumSystemVersion] toVersion:[SUHost systemVersionString]] != NSOrderedAscending;
+    }
+    
+    return minimumVersionOK && maximumVersionOK;
 }
 
 - (BOOL)itemContainsSkippedVersion:(SUAppcastItem *)ui
@@ -190,22 +205,24 @@
 	[download setDestination:downloadPath allowOverwrite:YES];
 }
 
-- (void)downloadDidFinish:(NSURLDownload *)d
+- (BOOL)validateUpdateDownloadedToPath:(NSString *)downloadedPath extractedToPath:(NSString *)extractedPath DSASignature:(NSString *)DSASignature publicDSAKey:(NSString *)publicDSAKey
 {
-	#if !ENDANGER_USERS_WITH_INSECURE_UPDATES
-	// New in Sparkle 1.5: we're now checking signatures on all non-secure downloads, where "secure" is defined as both the appcast and the download being transmitted over SSL.
-	NSURL *downloadURL = [[d request] URL];
-	if (!(([[downloadURL scheme] isEqualToString:@"https"] && [[appcastURL scheme] isEqualToString:@"https"]) ||
-		  ([downloadURL isFileURL] && [appcastURL isFileURL])))
-	{
-		if (![host publicDSAKey] || ![SUDSAVerifier validatePath:downloadPath withEncodedDSASignature:[updateItem DSASignature] withPublicDSAKey:[host publicDSAKey]])
-		{
-			[self abortUpdateWithError:[NSError errorWithDomain:SUSparkleErrorDomain code:SUSignatureError userInfo:[NSDictionary dictionaryWithObjectsAndKeys:SULocalizedString(@"An error occurred while extracting the archive. Please try again later.", nil), NSLocalizedDescriptionKey, @"The update is improperly signed.", NSLocalizedFailureReasonErrorKey, nil]]];
-			return;
-		}
-	}
-	#endif
-	
+    NSString *newBundlePath = [SUInstaller appPathInUpdateFolder:extractedPath forHost:host];
+    if (newBundlePath)
+    {
+        NSError *error = nil;
+        if ([SUCodeSigningVerifier codeSignatureIsValidAtPath:newBundlePath error:&error]) {
+            return YES;
+        } else {
+            SULog(@"Code signature check on update failed: %@", error);
+        }
+    }
+    
+    return [SUDSAVerifier validatePath:downloadedPath withEncodedDSASignature:DSASignature withPublicDSAKey:publicDSAKey];
+}
+
+- (void)downloadDidFinish:(NSURLDownload *)d
+{	
 	[self extractUpdate];
 }
 
@@ -271,11 +288,23 @@
 
 - (void)installWithToolAndRelaunch:(BOOL)relaunch displayingUserInterface:(BOOL)showUI
 {
+#if !ENDANGER_USERS_WITH_INSECURE_UPDATES
+    if (![self validateUpdateDownloadedToPath:downloadPath extractedToPath:tempDir DSASignature:[updateItem DSASignature] publicDSAKey:[host publicDSAKey]])
+    {
+        [self abortUpdateWithError:[NSError errorWithDomain:SUSparkleErrorDomain code:SUSignatureError userInfo:[NSDictionary dictionaryWithObjectsAndKeys:SULocalizedString(@"An error occurred while extracting the archive. Please try again later.", nil), NSLocalizedDescriptionKey, @"The update is improperly signed.", NSLocalizedFailureReasonErrorKey, nil]]];
+        return;
+	}
+#endif
+    
     if (![updater mayUpdateAndRestart])
     {
         [self abortUpdate];
         return;
     }
+	
+	BOOL running10_7 = floor(NSAppKitVersionNumber) > NSAppKitVersionNumber10_6;
+	BOOL useXPC = running10_7 && [[NSFileManager defaultManager] fileExistsAtPath:
+								  [[host bundlePath] stringByAppendingPathComponent:@"Contents/XPCServices/com.andymatuschak.Sparkle.SandboxService.xpc"]];
     
     // Give the host app an opportunity to postpone the install and relaunch.
     static BOOL postponedOnce = NO;
@@ -306,7 +335,12 @@
 #endif
 
 	// Only the paranoid survive: if there's already a stray copy of relaunch there, we would have problems.
-	if( [SUPlainInstaller copyPathWithAuthentication: relaunchPathToCopy overPath: targetPath temporaryName: nil error: &error] )
+	BOOL copiedRelaunchTool = FALSE;
+	if( useXPC )
+		copiedRelaunchTool = [SUXPC copyPathWithAuthentication: relaunchPathToCopy overPath: targetPath temporaryName: nil error: &error];
+	else
+		copiedRelaunchTool = [SUPlainInstaller copyPathWithAuthentication: relaunchPathToCopy overPath: targetPath temporaryName: nil error: &error];
+	if( copiedRelaunchTool )
 		relaunchPath = [targetPath retain];
 	else
 		[self abortUpdateWithError:[NSError errorWithDomain:SUSparkleErrorDomain code:SURelaunchError userInfo:[NSDictionary dictionaryWithObjectsAndKeys:SULocalizedString(@"An error occurred while extracting the archive. Please try again later.", nil), NSLocalizedDescriptionKey, [NSString stringWithFormat:@"Couldn't copy relauncher (%@) to temporary path (%@)! %@", relaunchPathToCopy, targetPath, (error ? [error localizedDescription] : @"")], NSLocalizedFailureReasonErrorKey, nil]]];
@@ -327,15 +361,11 @@
     if ([[updater delegate] respondsToSelector:@selector(pathToRelaunchForUpdater:)])
         pathToRelaunch = [[updater delegate] pathToRelaunchForUpdater:updater];
     NSString *relaunchToolPath = [relaunchPath stringByAppendingPathComponent: @"/Contents/MacOS/finish_installation"];
-    [NSTask launchedTaskWithLaunchPath: relaunchToolPath arguments:[NSArray arrayWithObjects:
-																	[host bundlePath],
-																	pathToRelaunch,
-																	[NSString stringWithFormat:@"%d", [[NSProcessInfo processInfo] processIdentifier]],
-																	tempDir,
-																	relaunch ? @"1" : @"0",
-																	showUI ? @"1" : @"0",
-																	nil]];
-
+	NSArray *arguments = [NSArray arrayWithObjects:[host bundlePath], pathToRelaunch, [NSString stringWithFormat:@"%d", [[NSProcessInfo processInfo] processIdentifier]], tempDir, relaunch ? @"1" : @"0", showUI ? @"1" : @"0", nil];
+	if( useXPC )
+		[SUXPC launchTaskWithLaunchPath: relaunchToolPath arguments:arguments];
+	else
+		[NSTask launchedTaskWithLaunchPath: relaunchToolPath arguments:arguments];
     [NSApp terminate:self];
 }
 

@@ -19,6 +19,7 @@
 	pid_t			parentprocessid;
 	const char		*folderpath;
 	NSString		*selfPath;
+    NSString        *installationPath;
 	NSTimer			*watchdogTimer;
 	NSTimer			*longInstallationTimer;
 	SUHost			*host;
@@ -70,6 +71,8 @@
 
 	[selfPath release];
 	selfPath = nil;
+    
+    [installationPath release];
 
 	[watchdogTimer release];
 	watchdogTimer = nil;
@@ -142,6 +145,7 @@
 	host = [[SUHost alloc] initWithBundle: theBundle];
 
     if (shouldShowUI) {
+		installationPath = [[host installationPath] copy];
         SUStatusController*	statusCtl = [[SUStatusController alloc] initWithHost: host];	// We quit anyway after we've installed, so leak this for now.
         [statusCtl setButtonTitle: SULocalizedString(@"Cancel Update",@"") target: nil action: Nil isDefault: NO];
         [statusCtl beginActionWithTitle: SULocalizedString(@"Installing update...",@"")
@@ -151,6 +155,7 @@
 	
 	[SUInstaller installFromUpdateFolder: [[NSFileManager defaultManager] stringWithFileSystemRepresentation: folderpath length: strlen(folderpath)]
 					overHost: host
+            installationPath: installationPath
 					delegate: self synchronously: NO
 					versionComparator: [SUStandardVersionComparator defaultComparator]];
 }

@@ -13,6 +13,7 @@
 #import "SUHost.h"
 #import "SUStatusController.h"
 #import "SUConstants.h"
+#import "SUPasswordPrompt.h"
 
 @implementation SUUIBasedUpdateDriver
 
@@ -160,6 +161,19 @@
 	[NSApp requestUserAttention:NSInformationalRequest];	
 }
 
+- (void)unarchiver:(SUUnarchiver *)unarchiver requiresPasswordReturnedViaInvocation:(NSInvocation *)invocation
+{
+    SUPasswordPrompt *prompt = [[SUPasswordPrompt alloc] initWithHost:host];
+    NSString *password = nil;
+    if([prompt run]) 
+    {
+        password = [prompt password];
+    }
+    [prompt release];
+    [invocation setArgument:&password atIndex:2];
+    [invocation invoke];
+}
+
 - (void)installAndRestart: (id)sender
 {
     [self installWithToolAndRelaunch:YES];
@@ -187,7 +201,7 @@
 
 - (void)abortUpdateWithError:(NSError *)error
 {
-	NSAlert *alert = [NSAlert alertWithMessageText:SULocalizedString(@"Update Error!", nil) defaultButton:SULocalizedString(@"Cancel Update", nil) alternateButton:nil otherButton:nil informativeTextWithFormat:[error localizedDescription]];
+	NSAlert *alert = [NSAlert alertWithMessageText:SULocalizedString(@"Update Error!", nil) defaultButton:SULocalizedString(@"Cancel Update", nil) alternateButton:nil otherButton:nil informativeTextWithFormat:@"%@", [error localizedDescription]];
 	[self showModalAlert:alert];
 	[super abortUpdateWithError:error];
 }
