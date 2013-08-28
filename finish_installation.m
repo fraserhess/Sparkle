@@ -143,9 +143,9 @@
 {
 	NSBundle			*theBundle = [NSBundle bundleWithPath: [[NSFileManager defaultManager] stringWithFileSystemRepresentation: hostpath length:strlen(hostpath)]];
 	host = [[SUHost alloc] initWithBundle: theBundle];
+	installationPath = [[host installationPath] copy];
 
     if (shouldShowUI) {
-		installationPath = [[host installationPath] copy];
         SUStatusController*	statusCtl = [[SUStatusController alloc] initWithHost: host];	// We quit anyway after we've installed, so leak this for now.
         [statusCtl setButtonTitle: SULocalizedString(@"Cancel Update",@"") target: nil action: Nil isDefault: NO];
         [statusCtl beginActionWithTitle: SULocalizedString(@"Installing update...",@"")
