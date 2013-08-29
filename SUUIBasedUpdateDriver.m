@@ -92,6 +92,15 @@
 	}			
 }
 
+- (void)updateAlert:(SUUpdateAlert *)updateAlert shouldAllowAutoUpdate: (BOOL*)shouldAllowAutoUpdate
+{
+	// In the quiet-automatic-update branch, if the user checks for updates
+	// manually, we do not wish them to turn off automatic updates
+	// This doesn't actually disallow automatic updates
+	// but it hides the UI to do so from the end user
+	// Technically a hack, but very efficent
+	*shouldAllowAutoUpdate = NO;
+}
 - (void)download:(NSURLDownload *)download didReceiveResponse:(NSURLResponse *)response
 {
 	[statusController setMaxProgressValue:[response expectedContentLength]];
